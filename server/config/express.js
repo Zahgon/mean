@@ -1,88 +1,96 @@
 const path = require('path');
-const express = require('express');
 const httpError = require('http-errors');
-const logger = require('morgan');
-const bodyParser = require('body-parser');
-const cookieParser = require('cookie-parser');
-const compress = require('compression');
-const methodOverride = require('method-override');
-const cors = require('cors');
-const helmet = require('helmet');
-const swaggerUi = require('swagger-ui-express');
+const Fastify = require('fastify');
+const fastifyStatic = require('@fastify/static');
+const fastifyCookie = require('@fastify/cookie');
+const fastifyCompress = require('@fastify/compress');
+const fastifyHelmet = require('@fastify/helmet');
+const fastifyCors = require('@fastify/cors');
+const fastifyFormbody = require('@fastify/formbody');
+const fastifySwagger = require('@fastify/swagger');
+const fastifySwaggerUi = require('@fastify/swagger-ui');
 const swaggerDocument = require('./swagger.json');
 const routes = require('../routes/index.route');
 const config = require('./config');
-const passport = require('./passport');
+const { initialize } = require('./passport');
 
-const app = express();
-
-if (config.env === 'development') {
-  app.use(logger('dev'));
-}
-
-// Choose what fronten framework to serve the dist from
-var distDir = '../../dist/';
+// Choose what frontend framework to serve the dist from
+let distDir = '../../dist/';
 if (config.frontend == 'react') {
   distDir = '../../node_modules/material-dashboard-react/dist';
 } else {
   distDir = '../../dist/';
 }
 
-//
-app.use(express.static(path.join(__dirname, distDir)));
-app.use(/^((?!(api)).)*/, (req, res) => {
-  res.sendFile(path.join(__dirname, distDir + '/index.html'));
-});
-
 console.log(distDir);
-//React server
-app.use(
-  express.static(
-    path.join(__dirname, '../../node_modules/material-dashboard-react/dist')
-  )
-);
-app.use(/^((?!(api)).)*/, (req, res) => {
-  res.sendFile(path.join(__dirname, '../../dist/index.html'));
-});
 
-app.use(bodyParser.json());
-app.use(bodyParser.urlencoded({ extended: true }));
+// build and configure the Fastify application (equivalent of the former express() app)
+function build(opts = {}) {
+  const app = Fastify(
+    Object.assign(
+      {
+        // preserve development request logging (parity with morgan('dev'))
+        logger: config.env === 'development',
+      },
+      opts
+    )
+  );
 
-app.use(cookieParser());
-app.use(compress());
-app.use(methodOverride());
+  // parse application/x-www-form-urlencoded bodies (JSON is parsed natively)
+  app.register(fastifyFormbody);
 
-// secure apps by setting various HTTP headers
-app.use(helmet());
+  // cookie parsing
+  app.register(fastifyCookie);
 
-// enable CORS - Cross Origin Resource Sharing
-app.use(cors());
+  // response compression
+  app.register(fastifyCompress);
 
-app.use(passport.initialize());
+  // secure apps by setting various HTTP headers
+  app.register(fastifyHelmet, { contentSecurityPolicy: false });
 
-app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerDocument));
+  // enable CORS - Cross Origin Resource Sharing
+  app.register(fastifyCors);
 
-// API router
-app.use('/api/', routes);
+  // initialize authentication (registers jwt/local verification helpers)
+  initialize(app);
 
-// catch 404 and forward to error handler
-app.use((req, res, next) => {
-  const err = new httpError(404);
-  return next(err);
-});
-
-// error handler, send stacktrace only during development
-app.use((err, req, res, next) => {
-  // customize Joi validation errors
-  if (err.isJoi) {
-    err.message = err.details.map(e => e.message).join('; ');
-    err.status = 400;
-  }
-
-  res.status(err.status || 500).json({
-    message: err.message,
+  // swagger docs served at /api-docs
+  app.register(fastifySwagger, {
+    mode: 'static',
+    specification: { document: swaggerDocument },
   });
-  next(err);
-});
+  app.register(fastifySwaggerUi, { routePrefix: '/api-docs' });
 
-module.exports = app;
+  // API router mounted under /api/
+  app.register(routes, { prefix: '/api' });
+
+  // serve the built frontend from the dist directory
+  app.register(fastifyStatic, {
+    root: path.join(__dirname, distDir),
+    wildcard: false,
+  });
+
+  // customize Joi validation errors and preserve the { message } error shape
+  app.setErrorHandler((err, req, reply) => {
+    if (err.isJoi) {
+      err.message = err.details.map(e => e.message).join('; ');
+      err.status = 400;
+    }
+    const status = err.status || err.statusCode || 500;
+    reply.status(status).send({ message: err.message });
+  });
+
+  // any non-/api route serves the SPA index.html; unknown /api routes are 404
+  app.setNotFoundHandler((req, reply) => {
+    if (/api/.test(req.url)) {
+      const err = new httpError(404);
+      reply.status(err.status).send({ message: err.message });
+      return;
+    }
+    reply.sendFile('index.html', path.join(__dirname, distDir));
+  });
+
+  return app;
+}
+
+module.exports = build;

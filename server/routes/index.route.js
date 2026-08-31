@@ -1,13 +1,13 @@
-const express = require('express');
 const userRoutes = require('./user.route');
 const authRoutes = require('./auth.route');
 
-const router = express.Router(); // eslint-disable-line new-cap
+// Root API plugin (mounted under /api by config/express.js).
+async function router(app) {
+  /** GET /health-check - Check service health */
+  app.get('/health-check', (req, reply) => reply.send('OK'));
 
-/** GET /health-check - Check service health */
-router.get('/health-check', (req, res) => res.send('OK'));
-
-router.use('/auth', authRoutes);
-router.use('/user', userRoutes);
+  app.register(authRoutes, { prefix: '/auth' });
+  app.register(userRoutes, { prefix: '/user' });
+}
 
 module.exports = router;

@@ -1,31 +1,25 @@
-const express = require('express');
-const asyncHandler = require('express-async-handler');
-const passport = require('passport');
 const userCtrl = require('../controllers/user.controller');
 const authCtrl = require('../controllers/auth.controller');
-const config = require('../config/config');
+const { authenticateLocal, authenticateJwt } = require('../config/passport');
 
-const router = express.Router();
-module.exports = router;
+// Auth plugin (mounted under /api/auth).
+async function router(app) {
+  app.post('/register', { preHandler: register }, login);
+  app.post('/login', { preHandler: authenticateLocal }, login);
+  app.get('/me', { preHandler: authenticateJwt }, login);
+}
 
-router.post('/register', asyncHandler(register), login);
-router.post(
-  '/login',
-  passport.authenticate('local', { session: false }),
-  login
-);
-router.get('/me', passport.authenticate('jwt', { session: false }), login);
-
-async function register(req, res, next) {
+async function register(req, reply) {
   let user = await userCtrl.insert(req.body);
   user = user.toObject();
   delete user.hashedPassword;
   req.user = user;
-  next();
 }
 
-function login(req, res) {
-  let user = req.user;
-  let token = authCtrl.generateToken(user);
-  res.json({ user, token });
+function login(req, reply) {
+  const user = req.user;
+  const token = authCtrl.generateToken(user);
+  return reply.send({ user, token });
 }
+
+module.exports = router;
